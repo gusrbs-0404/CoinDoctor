@@ -38,4 +38,10 @@ public class ErrorResponse {
         this.details = details;
         this.timestamp = LocalDateTime.now();
     }
+    
+    public ErrorResponse(String error, String message, LocalDateTime timestamp) {
+        this.error = error;
+        this.message = message;
+        this.timestamp = timestamp;
+    }
 }
