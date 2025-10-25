@@ -14,7 +14,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * 통계 서비스
@@ -229,5 +232,202 @@ public class StatisticsService {
         // One Source of Truth: 일별 통계는 Repository를 통해서만 조회
         return dailySummaryRepository.findByDate(today)
             .orElseGet(() -> calculateDailySummary(today));
+    }
+    
+    /**
+     * 일별 통계를 Map 형태로 조회
+     * 단일 책임: 통계를 Map으로 변환만 담당
+     * 
+     * @param date 조회할 날짜
+     * @return 일별 통계 Map
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getDailyStatistics(LocalDate date) {
+        log.debug("일별 통계 Map 조회: date={}", date);
+        
+        DailySummary summary = dailySummaryRepository.findByDate(date)
+            .orElseGet(() -> calculateDailySummary(date));
+        
+        return convertToMap(summary);
+    }
+    
+    /**
+     * 기간별 통계를 Map 리스트로 조회
+     * 단일 책임: 기간별 통계를 Map 리스트로 변환만 담당
+     * 
+     * @param startDate 시작 날짜
+     * @param endDate 종료 날짜
+     * @return 기간별 통계 Map 리스트
+     */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> getRangeStatistics(LocalDate startDate, LocalDate endDate) {
+        log.debug("기간별 통계 Map 리스트 조회: {} ~ {}", startDate, endDate);
+        
+        List<DailySummary> summaries = dailySummaryRepository
+            .findByDateBetweenOrderByDateDesc(startDate, endDate);
+        
+        return summaries.stream()
+            .map(this::convertToMap)
+            .collect(Collectors.toList());
+    }
+    
+    /**
+     * 전체 통계 요약 조회
+     * 단일 책임: 전체 통계 요약만 담당
+     * 
+     * @return 전체 통계 요약 Map
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getTotalSummary() {
+        log.debug("전체 통계 요약 조회");
+        
+        List<DailySummary> allSummaries = dailySummaryRepository.findAllByOrderByDateDesc();
+        
+        if (allSummaries.isEmpty()) {
+            Map<String, Object> emptyData = new HashMap<>();
+            emptyData.put("totalTrades", 0);
+            emptyData.put("totalProfit", BigDecimal.ZERO);
+            emptyData.put("averageWinRate", BigDecimal.ZERO);
+            emptyData.put("tradingDays", 0);
+            return emptyData;
+        }
+        
+        int totalTrades = allSummaries.stream()
+            .mapToInt(DailySummary::getTotalTrades)
+            .sum();
+        
+        BigDecimal totalProfit = allSummaries.stream()
+            .map(DailySummary::getTotalProfit)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        BigDecimal averageWinRate = allSummaries.stream()
+            .map(DailySummary::getWinRate)
+            .reduce(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal.valueOf(allSummaries.size()), 2, RoundingMode.HALF_UP);
+        
+        Map<String, Object> summary = new HashMap<>();
+        summary.put("totalTrades", totalTrades);
+        summary.put("totalProfit", totalProfit);
+        summary.put("averageWinRate", averageWinRate);
+        summary.put("tradingDays", allSummaries.size());
+        
+        return summary;
+    }
+    
+    /**
+     * 월별 통계 조회
+     * 단일 책임: 월별 통계 계산만 담당
+     * 
+     * @param year 연도
+     * @param month 월
+     * @return 월별 통계 Map
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getMonthlyStatistics(int year, int month) {
+        log.debug("월별 통계 조회: {}-{}", year, month);
+        
+        LocalDate startDate = LocalDate.of(year, month, 1);
+        LocalDate endDate = startDate.plusMonths(1).minusDays(1);
+        
+        List<DailySummary> monthlySummaries = dailySummaryRepository
+            .findByDateBetweenOrderByDateDesc(startDate, endDate);
+        
+        if (monthlySummaries.isEmpty()) {
+            Map<String, Object> emptyData = new HashMap<>();
+            emptyData.put("year", year);
+            emptyData.put("month", month);
+            emptyData.put("totalTrades", 0);
+            emptyData.put("totalProfit", BigDecimal.ZERO);
+            emptyData.put("averageWinRate", BigDecimal.ZERO);
+            emptyData.put("tradingDays", 0);
+            return emptyData;
+        }
+        
+        int totalTrades = monthlySummaries.stream()
+            .mapToInt(DailySummary::getTotalTrades)
+            .sum();
+        
+        BigDecimal totalProfit = monthlySummaries.stream()
+            .map(DailySummary::getTotalProfit)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+        
+        BigDecimal averageWinRate = monthlySummaries.stream()
+            .map(DailySummary::getWinRate)
+            .reduce(BigDecimal.ZERO, BigDecimal::add)
+            .divide(BigDecimal.valueOf(monthlySummaries.size()), 2, RoundingMode.HALF_UP);
+        
+        Map<String, Object> monthlyStats = new HashMap<>();
+        monthlyStats.put("year", year);
+        monthlyStats.put("month", month);
+        monthlyStats.put("totalTrades", totalTrades);
+        monthlyStats.put("totalProfit", totalProfit);
+        monthlyStats.put("averageWinRate", averageWinRate);
+        monthlyStats.put("tradingDays", monthlySummaries.size());
+        
+        return monthlyStats;
+    }
+    
+    /**
+     * 승률 계산 (기간별)
+     * 단일 책임: 기간별 승률 계산만 담당
+     * 
+     * @param startDate 시작 날짜 (null이면 전체)
+     * @param endDate 종료 날짜 (null이면 전체)
+     * @return 승률 (%)
+     */
+    @Transactional(readOnly = true)
+    public double calculateWinRate(LocalDate startDate, LocalDate endDate) {
+        log.debug("승률 계산: {} ~ {}", startDate, endDate);
+        
+        List<TradeLog> trades;
+        
+        if (startDate == null && endDate == null) {
+            // 전체 기간
+            trades = tradeLogRepository.findAll();
+        } else if (startDate != null && endDate != null) {
+            // 특정 기간
+            LocalDateTime start = startDate.atStartOfDay();
+            LocalDateTime end = endDate.plusDays(1).atStartOfDay();
+            trades = tradeLogRepository.findByCreatedAtBetweenOrderByCreatedAtDesc(start, end);
+        } else {
+            // 시작 날짜만 있는 경우
+            LocalDateTime start = (startDate != null ? startDate : LocalDate.MIN).atStartOfDay();
+            LocalDateTime end = (endDate != null ? endDate : LocalDate.now()).plusDays(1).atStartOfDay();
+            trades = tradeLogRepository.findByCreatedAtBetweenOrderByCreatedAtDesc(start, end);
+        }
+        
+        BigDecimal winRate = calculateWinRate(trades);
+        return winRate.doubleValue();
+    }
+    
+    /**
+     * 일별 요약 생성
+     * 단일 책임: 일별 요약 생성만 담당
+     * 
+     * @param date 생성할 날짜
+     */
+    @Transactional
+    public void generateDailySummary(LocalDate date) {
+        log.info("일별 요약 생성: date={}", date);
+        calculateDailySummary(date);
+    }
+    
+    /**
+     * DailySummary를 Map으로 변환
+     * 단일 책임: 엔티티를 Map으로 변환만 담당
+     * 
+     * @param summary DailySummary 엔티티
+     * @return Map 형태의 통계 데이터
+     */
+    private Map<String, Object> convertToMap(DailySummary summary) {
+        Map<String, Object> data = new HashMap<>();
+        data.put("summaryId", summary.getSummaryId());
+        data.put("date", summary.getDate());
+        data.put("totalTrades", summary.getTotalTrades());
+        data.put("totalProfit", summary.getTotalProfit());
+        data.put("winRate", summary.getWinRate());
+        data.put("createdAt", summary.getCreatedAt());
+        data.put("updatedAt", summary.getUpdatedAt());
+        return data;
     }
 }
