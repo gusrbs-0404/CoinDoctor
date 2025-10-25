@@ -16,7 +16,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 리스크 관리 서비스
@@ -254,5 +256,271 @@ public class RiskManagerService {
         // One Source of Truth: 시스템 상태는 Repository를 통해서만 조회
         return systemStatusRepository.findFirstByOrderByLastUpdateDesc()
             .orElse(new SystemStatus());
+    }
+    
+    /**
+     * 현재 리스크 상태를 Map으로 조회
+     * 단일 책임: 리스크 상태를 Map으로 변환만 담당
+     * 
+     * @return 리스크 상태 Map
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getCurrentRiskStatus() {
+        log.debug("현재 리스크 상태 Map 조회");
+        
+        SystemStatus systemStatus = getCurrentSystemStatus();
+        int consecutiveLosses = getConsecutiveLossCount();
+        boolean isCircuitBreakerTriggered = isCircuitBreakerTriggered();
+        boolean isCooldownActive = isCooldownActive();
+        
+        Map<String, Object> status = new HashMap<>();
+        status.put("tradingStatus", systemStatus.getAutoTrading());
+        status.put("consecutiveLosses", consecutiveLosses);
+        status.put("isCircuitBreakerTriggered", isCircuitBreakerTriggered);
+        status.put("isCooldownActive", isCooldownActive);
+        status.put("cooldownRemainingSeconds", getCooldownRemainingSeconds());
+        status.put("statusReason", systemStatus.getStatusReason());
+        status.put("lastUpdate", systemStatus.getLastUpdate());
+        
+        return status;
+    }
+    
+    /**
+     * 연속 손실 횟수 조회
+     * 단일 책임: 연속 손실 횟수 계산만 담당
+     * 
+     * @return 연속 손실 횟수
+     */
+    @Transactional(readOnly = true)
+    public int getConsecutiveLossCount() {
+        log.debug("연속 손실 횟수 조회");
+        
+        LocalDateTime oneDayAgo = LocalDateTime.now().minusDays(1);
+        List<TradeLog> recentLossTrades = tradeLogRepository.findLossTradesSince(oneDayAgo);
+        
+        if (recentLossTrades == null || recentLossTrades.isEmpty()) {
+            return 0;
+        }
+        
+        int count = 0;
+        for (TradeLog trade : recentLossTrades) {
+            if (trade.getProfitLoss() != null && trade.getProfitLoss().compareTo(BigDecimal.ZERO) < 0) {
+                count++;
+            } else {
+                break;
+            }
+        }
+        
+        return count;
+    }
+    
+    /**
+     * 연속 손실 한도 도달 여부 확인
+     * 단일 책임: 연속 손실 한도 체크만 담당
+     * 
+     * @return 연속 손실 한도 도달 여부
+     */
+    @Transactional(readOnly = true)
+    public boolean isConsecutiveLossLimitReached() {
+        int consecutiveLosses = getConsecutiveLossCount();
+        int maxConsecutiveLosses = RiskConstants.MAX_CONSECUTIVE_LOSSES;
+        return consecutiveLosses >= maxConsecutiveLosses;
+    }
+    
+    /**
+     * 서킷브레이커 발동 여부 확인
+     * 단일 책임: 서킷브레이커 상태 확인만 담당
+     * 
+     * @return 서킷브레이커 발동 여부
+     */
+    @Transactional(readOnly = true)
+    public boolean isCircuitBreakerTriggered() {
+        SystemStatus systemStatus = getCurrentSystemStatus();
+        return systemStatus.getAutoTrading() == SystemStatus.TradingStatus.STOPPED &&
+               "CIRCUIT_BREAKER".equals(systemStatus.getStatusReason());
+    }
+    
+    /**
+     * 쿨다운 활성 여부 확인
+     * 단일 책임: 쿨다운 상태 확인만 담당
+     * 
+     * @return 쿨다운 활성 여부
+     */
+    @Transactional(readOnly = true)
+    public boolean isCooldownActive() {
+        SystemStatus systemStatus = getCurrentSystemStatus();
+        return systemStatus.getCooldownRemainingSeconds() > 0;
+    }
+    
+    /**
+     * 쿨다운 남은 시간 조회
+     * 단일 책임: 쿨다운 남은 시간 조회만 담당
+     * 
+     * @return 쿨다운 남은 시간 (초)
+     */
+    @Transactional(readOnly = true)
+    public long getCooldownRemainingSeconds() {
+        SystemStatus systemStatus = getCurrentSystemStatus();
+        return systemStatus.getCooldownRemainingSeconds();
+    }
+    
+    /**
+     * 거래 금액 검증
+     * 단일 책임: 거래 금액 유효성 검증만 담당
+     * 
+     * @param amount 거래 금액
+     * @return 유효성 여부
+     */
+    public boolean validateTradeAmount(BigDecimal amount) {
+        log.debug("거래 금액 검증: amount={}", amount);
+        
+        if (amount == null || amount.compareTo(BigDecimal.ZERO) <= 0) {
+            return false;
+        }
+        
+        BigDecimal maxAmount = getMaxTradeAmount();
+        return amount.compareTo(maxAmount) <= 0;
+    }
+    
+    /**
+     * 최대 거래 금액 조회
+     * 단일 책임: 최대 거래 금액 조회만 담당
+     * 
+     * @return 최대 거래 금액
+     */
+    public BigDecimal getMaxTradeAmount() {
+        // 하드코딩 금지: Constants에서 조회
+        return com.ai.CoinDoctor.shared.constants.TradingConstants.MAX_TRADING_AMOUNT;
+    }
+    
+    /**
+     * 리스크 이벤트 조회 (필터링)
+     * 단일 책임: 리스크 이벤트 조회만 담당
+     * 
+     * @param startDate 시작 날짜
+     * @param endDate 종료 날짜
+     * @param eventType 이벤트 타입
+     * @return 리스크 이벤트 목록
+     */
+    @Transactional(readOnly = true)
+    public List<RiskEventLog> getRiskEvents(LocalDate startDate, LocalDate endDate, String eventType) {
+        log.debug("리스크 이벤트 조회: {} ~ {}, eventType={}", startDate, endDate, eventType);
+        
+        if (startDate != null && endDate != null && eventType != null) {
+            RiskEventLog.EventType type = RiskEventLog.EventType.valueOf(eventType);
+            return riskEventLogRepository.findByDateBetweenAndEventType(startDate, endDate, type);
+        } else if (startDate != null && endDate != null) {
+            return riskEventLogRepository.findByDateBetweenOrderByTriggeredAtDesc(startDate, endDate);
+        } else if (eventType != null) {
+            RiskEventLog.EventType type = RiskEventLog.EventType.valueOf(eventType);
+            return riskEventLogRepository.findByEventTypeOrderByTriggeredAtDesc(type);
+        } else {
+            return riskEventLogRepository.findAllByOrderByTriggeredAtDesc();
+        }
+    }
+    
+    /**
+     * 일일 손실 한도 초과 여부 확인
+     * 단일 책임: 일일 손실 한도 체크만 담당
+     * 
+     * @return 일일 손실 한도 초과 여부
+     */
+    @Transactional(readOnly = true)
+    public boolean isDailyLossLimitExceeded() {
+        BigDecimal todayLoss = getTodayTotalLoss();
+        BigDecimal maxDailyLoss = getMaxDailyLoss();
+        return todayLoss.abs().compareTo(maxDailyLoss) > 0;
+    }
+    
+    /**
+     * 오늘의 총 손실 조회
+     * 단일 책임: 오늘의 총 손실 계산만 담당
+     * 
+     * @return 오늘의 총 손실
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal getTodayTotalLoss() {
+        LocalDateTime todayStart = LocalDateTime.now().withHour(0).withMinute(0).withSecond(0);
+        BigDecimal todayProfitLoss = tradeLogRepository.sumProfitLossSince(todayStart);
+        return todayProfitLoss != null ? todayProfitLoss : BigDecimal.ZERO;
+    }
+    
+    /**
+     * 최대 일일 손실 한도 조회
+     * 단일 책임: 최대 일일 손실 한도 조회만 담당
+     * 
+     * @return 최대 일일 손실 한도
+     */
+    public BigDecimal getMaxDailyLoss() {
+        // 하드코딩 금지: Constants에서 조회
+        return BigDecimal.valueOf(RiskConstants.MAX_DAILY_LOSS_PERCENT);
+    }
+    
+    /**
+     * 최대 연속 손실 횟수 조회
+     * 단일 책임: 최대 연속 손실 횟수 조회만 담당
+     * 
+     * @return 최대 연속 손실 횟수
+     */
+    public int getMaxConsecutiveLosses() {
+        // 하드코딩 금지: Constants에서 조회
+        return RiskConstants.MAX_CONSECUTIVE_LOSSES;
+    }
+    
+    /**
+     * 쿨다운 지속 시간 조회
+     * 단일 책임: 쿨다운 지속 시간 조회만 담당
+     * 
+     * @return 쿨다운 지속 시간 (초)
+     */
+    public long getCooldownDuration() {
+        // 하드코딩 금지: Constants에서 조회
+        return RiskConstants.COOLDOWN_DURATION_SECONDS;
+    }
+    
+    /**
+     * 서킷브레이커 임계값 조회
+     * 단일 책임: 서킷브레이커 임계값 조회만 담당
+     * 
+     * @return 서킷브레이커 임계값 (%)
+     */
+    public BigDecimal getCircuitBreakerThreshold() {
+        // 하드코딩 금지: Constants에서 조회
+        return BigDecimal.valueOf(RiskConstants.CIRCUIT_BREAKER_THRESHOLD_PERCENT);
+    }
+    
+    /**
+     * 서킷브레이커 수동 해제
+     * 단일 책임: 서킷브레이커 해제만 담당
+     */
+    @Transactional
+    public void resetCircuitBreaker() {
+        log.info("서킷브레이커 수동 해제");
+        
+        SystemStatus systemStatus = getCurrentSystemStatus();
+        systemStatus.setAutoTrading(SystemStatus.TradingStatus.RUNNING);
+        systemStatus.setStatusReason("MANUAL_RESET");
+        systemStatus.setCooldownRemainingSeconds(0);
+        
+        systemStatusRepository.save(systemStatus);
+        
+        recordRiskEvent(RiskEventLog.EventType.MANUAL_RESET, "서킷브레이커 수동 해제");
+    }
+    
+    /**
+     * 쿨다운 타이머 수동 해제
+     * 단일 책임: 쿨다운 타이머 해제만 담당
+     */
+    @Transactional
+    public void resetCooldown() {
+        log.info("쿨다운 타이머 수동 해제");
+        
+        SystemStatus systemStatus = getCurrentSystemStatus();
+        systemStatus.setCooldownRemainingSeconds(0);
+        systemStatus.setStatusReason("COOLDOWN_RESET");
+        
+        systemStatusRepository.save(systemStatus);
+        
+        recordRiskEvent(RiskEventLog.EventType.MANUAL_RESET, "쿨다운 타이머 수동 해제");
     }
 }

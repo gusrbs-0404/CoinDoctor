@@ -74,6 +74,7 @@ public class RiskEventLog {
         API_ERROR("API 오류"),
         NETWORK_ERROR("네트워크 오류"),
         MANUAL_STOP("수동 중지"),
+        MANUAL_RESET("수동 해제"),
         SYSTEM_ERROR("시스템 오류");
         
         private final String description;

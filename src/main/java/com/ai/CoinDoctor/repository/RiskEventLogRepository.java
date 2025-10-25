@@ -86,4 +86,34 @@ public interface RiskEventLogRepository extends JpaRepository<RiskEventLog, Inte
      * @return 전체 리스크 이벤트 목록
      */
     List<RiskEventLog> findAllByOrderByTriggeredAtDesc();
+    
+    /**
+     * 날짜 범위 내의 리스크 이벤트 조회
+     * 하드코딩 금지: 메서드 이름으로 쿼리 자동 생성
+     * 
+     * @param startDate 시작 날짜
+     * @param endDate 종료 날짜
+     * @return 날짜 범위 내의 리스크 이벤트 목록
+     */
+    List<RiskEventLog> findByDateBetween(LocalDate startDate, LocalDate endDate);
+    
+    /**
+     * 특정 이벤트 타입의 로그 조회
+     * 하드코딩 금지: Enum 사용으로 타입 안전성 확보
+     * 
+     * @param eventType 이벤트 타입
+     * @return 해당 이벤트 타입의 로그 목록
+     */
+    List<RiskEventLog> findByEventType(RiskEventLog.EventType eventType);
+    
+    /**
+     * 날짜 범위 및 이벤트 타입으로 리스크 이벤트 조회
+     * 하드코딩 금지: 메서드 이름으로 쿼리 자동 생성
+     * 
+     * @param startDate 시작 날짜
+     * @param endDate 종료 날짜
+     * @param eventType 이벤트 타입
+     * @return 조건에 맞는 리스크 이벤트 목록
+     */
+    List<RiskEventLog> findByDateBetweenAndEventType(LocalDate startDate, LocalDate endDate, RiskEventLog.EventType eventType);
 }
